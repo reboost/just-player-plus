@@ -32,6 +32,7 @@ import android.media.audiofx.LoudnessEnhancer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Looper;
 import android.os.Parcelable;
 import android.provider.DocumentsContract;
 import android.provider.Settings;
@@ -82,9 +83,11 @@ import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlaybackException;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.Renderer;
 import androidx.media3.exoplayer.RenderersFactory;
 import androidx.media3.exoplayer.SeekParameters;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.exoplayer.text.TextOutput;
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
 import androidx.media3.extractor.DefaultExtractorsFactory;
 import androidx.media3.extractor.text.SubtitleParser;
@@ -103,6 +106,7 @@ import com.brouken.player.dtpv.DoubleTapPlayerView;
 import com.brouken.player.dtpv.youtube.YouTubeOverlay;
 import com.brouken.player.osd.OsdSettingsController;
 import com.brouken.player.subtitle.CueModifier;
+import com.brouken.player.subtitle.DelayedTextRenderer;
 import com.brouken.player.subtitle.parser.EnhancedSubtitleParserFactory;
 import com.brouken.player.subtitle.parser.OffsetSubtitleParserFactory;
 import com.getkeepsafe.taptargetview.TapTarget;
@@ -133,6 +137,7 @@ public class PlayerActivity extends Activity {
 
     public CustomPlayerView playerView;
     public static ExoPlayer player;
+    private DelayedTextRenderer delayedTextRenderer;
     private YouTubeOverlay youTubeOverlay;
     private OsdSettingsController osdSettingsController;
 
@@ -1291,7 +1296,7 @@ public class PlayerActivity extends Activity {
 
         EnhancedSubtitleParserFactory enhancedSubtitleParserFactory = new EnhancedSubtitleParserFactory(0);
         SubtitleParser.Factory subtitleParserFactory =
-                new OffsetSubtitleParserFactory(enhancedSubtitleParserFactory, subtitleDelayMs);
+                new OffsetSubtitleParserFactory(enhancedSubtitleParserFactory, new AtomicInteger(0));
 
         // https://github.com/google/ExoPlayer/issues/8571
         DefaultExtractorsFactory extractorsFactory = new DefaultExtractorsFactory()
@@ -1299,9 +1304,21 @@ public class PlayerActivity extends Activity {
                 .setTsExtractorTimestampSearchBytes(1500 * TsExtractor.TS_PACKET_SIZE)
                 .setSubtitleParserFactory(subtitleParserFactory);
 
-        @SuppressLint("WrongConstant") RenderersFactory renderersFactory = new DefaultRenderersFactory(this)
-                .setExtensionRendererMode(mPrefs.decoderPriority)
-                .setMapDV7ToHevc(mPrefs.mapDV7ToHevc);
+        @SuppressLint("WrongConstant") DefaultRenderersFactory defaultRenderersFactory = new DefaultRenderersFactory(this) {
+            @Override
+            protected void buildTextRenderers(
+                    Context context,
+                    TextOutput output,
+                    Looper outputLooper,
+                    int extensionRendererMode,
+                    ArrayList<Renderer> out) {
+                delayedTextRenderer = new DelayedTextRenderer(output, outputLooper, subtitleDelayMs);
+                out.add(delayedTextRenderer);
+            }
+        };
+        defaultRenderersFactory.setExtensionRendererMode(mPrefs.decoderPriority);
+        defaultRenderersFactory.setMapDV7ToHevc(mPrefs.mapDV7ToHevc);
+        RenderersFactory renderersFactory = defaultRenderersFactory;
 
         DefaultMediaSourceFactory mediaSourceFactory =
                 new DefaultMediaSourceFactory(this, extractorsFactory)
@@ -1510,6 +1527,7 @@ public class PlayerActivity extends Activity {
             player.clearMediaItems();
             player.release();
             player = null;
+            delayedTextRenderer = null;
         }
         titleView.setVisibility(View.GONE);
         updateButtons(false);
@@ -2101,6 +2119,8 @@ public class PlayerActivity extends Activity {
 
     public void updateSubtitleDelay(int delayMs) {
         mPrefs.updateSubtitleDelay(delayMs);
+        subtitleDelayMs.set(delayMs);
+        notifySubtitleDelayChanged(delayMs);
         playerView.removeCallbacks(subtitleDelayApplyRunnable);
         playerView.postDelayed(subtitleDelayApplyRunnable, 500);
     }
@@ -2108,7 +2128,16 @@ public class PlayerActivity extends Activity {
     private void applySubtitleDelay() {
         int newDelayMs = mPrefs.getSubtitleDelayForUri(mPrefs.mediaUri);
         subtitleDelayMs.set(newDelayMs);
-        restartPlayback();
+        notifySubtitleDelayChanged(newDelayMs);
+    }
+
+    private void notifySubtitleDelayChanged(int delayMs) {
+        if (player != null && delayedTextRenderer != null) {
+            player.createMessage(delayedTextRenderer)
+                    .setType(DelayedTextRenderer.MSG_SET_DELAY)
+                    .setPayload(delayMs)
+                    .send();
+        }
     }
 
     private void restartPlayback() {

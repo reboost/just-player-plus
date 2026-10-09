@@ -1,0 +1,8 @@
+{
+  "name": "Just Player+",
+  "description": "Video player with advanced subtitle controls, MicroDVD/MPL2 support, customizable edge styles, gesture seeking, brightness/volume controls, and aspect ratio modes.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
